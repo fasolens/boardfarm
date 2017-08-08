@@ -1,0 +1,16 @@
+{
+  "test": {
+    "board_type": "test",
+    "conn_cmd": "ssh root@192.168.1.1 -i ~/.ssh/id_rsa",
+    "connection_type": "ssh",
+    "ssh_password": "password",
+    "devices": [
+      {
+        "type": "debian",
+        "name": "wan",
+        "ipaddr": "192.168.178.235",
+        "color": "cyan"
+      }
+    ]
+  }
+}
