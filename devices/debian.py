@@ -263,7 +263,7 @@ class DebianBox(base.BaseDevice):
         self.sendline('\nifconfig eth1 up')
         self.expect('ifconfig eth1 up')
         self.expect(self.prompt)
-	self.sendline("dhclient -r eth1")
+        self.sendline("dhclient -r eth1")
         self.expect(self.prompt)
         self.sendline('\nifconfig eth1 0.0.0.0')
         self.expect(self.prompt)
