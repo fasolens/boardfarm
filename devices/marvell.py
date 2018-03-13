@@ -7,7 +7,8 @@
 
 import common
 import openwrt_router
-
+import pexpect
+import time
 
 class WRT3200ACM(openwrt_router.OpenWrtRouter):
     '''
@@ -15,9 +16,36 @@ class WRT3200ACM(openwrt_router.OpenWrtRouter):
     '''
 
     prompt = ['root\\@.*:.*#', ]
-    uprompt = ['Marvell>>']
+    uprompt = ['Venom>>']
     uboot_eth = "egiga1"
     wan_iface = "wan"
+
+    def reset(self, break_into_uboot=False):
+        if not break_into_uboot:
+            self.power.reset()
+        else:
+            self.wait_for_boot()
+
+    def wait_for_boot(self):
+        '''Power-cycle this device.'''
+        self.power.reset()
+
+        self.expect_exact('General initialization - Version: 1.0.0')
+        for not_used in range(10):
+            self.expect(pexpect.TIMEOUT, timeout=0.1)
+            self.sendline('echo FOO')
+            if 0 != self.expect([pexpect.TIMEOUT] + ['echo FOO'], timeout=0.1):
+                break
+            if 0 != self.expect([pexpect.TIMEOUT] + ['FOO'], timeout=0.1):
+                break
+            if 0 != self.expect([pexpect.TIMEOUT] + self.uprompt, timeout=0.1):
+                break
+            time.sleep(1)
+
+    def wait_for_linux(self):
+        self.wait_for_boot()
+        self.sendline("boot")
+        super(WRT3200ACM, self).wait_for_linux()
 
     def flash_linux(self, KERNEL):
         common.print_bold("\n===== Flashing linux =====\n")
