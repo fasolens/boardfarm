@@ -115,4 +115,4 @@ class LinuxBootTest(unittest2.TestCase):
             print("aborting tests, unable to boot..")
             sys.exit(1)
         print("ERROR: No default recovery!")
-        raise "No default recovery!"
+        raise Exception("No default recovery!")
