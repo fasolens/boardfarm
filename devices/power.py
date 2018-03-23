@@ -30,13 +30,16 @@ def get_power_device(ip_address, username=None, password=None, outlet=None):
     '''
 
     if ip_address is None:
-        if outlet is not None and "wemo://" in outlet:
-            if WemoEnv is None:
-                print("Please install ouimeaux: pip install ouimeaux")
-            else:
-                return WemoPowerSwitch(outlet=outlet)
-        else:
-            return HumanButtonPusher()
+        if outlet is not None:
+            if "wemo://" in outlet:
+                if WemoEnv is None:
+                    print("Please install ouimeaux: pip install ouimeaux")
+                else:
+                    return WemoPowerSwitch(outlet=outlet)
+            if "serial://" in outlet:
+                return SimpleSerialPower(outlet=outlet)
+
+        return HumanButtonPusher()
 
     try:
         data = urlopen("http://" + ip_address).read().decode()
@@ -51,6 +54,8 @@ def get_power_device(ip_address, username=None, password=None, outlet=None):
         return SentrySwitchedCDU(ip_address, outlet=outlet)
     if '<title>APC ' in data:
         return APCPower(ip_address, outlet=outlet)
+    if '<b>IP9258 Log In</b>' in data:
+        return Ip9258(ip_address, outlet, username=username, password=password)
     else:
         raise Exception("No code written to handle power device found at %s" % ip_address)
 
@@ -79,7 +84,7 @@ class SentrySwitchedCDU(PowerDevice):
                  ip_address,
                  outlet,
                  username='admn',
-                 password='bigfoot1'):
+                 password='admn'):
         PowerDevice.__init__(self, ip_address, username, password)
         self.outlet = outlet
         # Verify connection
@@ -97,7 +102,7 @@ class SentrySwitchedCDU(PowerDevice):
 
     def __connect(self):
         pcon = pexpect.spawn('telnet %s' % self.ip_address)
-        pcon.expect('Sentry Switched CDU Version 7', timeout=15)
+        pcon.expect('Sentry Switched CDU Version', timeout=15)
         pcon.expect('Username:')
         pcon.sendline(self.username)
         pcon.expect('Password:')
@@ -192,6 +197,85 @@ class WemoPowerSwitch(PowerDevice):
         self.switch.off()
         time.sleep(5)
         self.switch.on()
+
+class SimpleSerialPower(PowerDevice):
+    '''
+    Simple serial based relay or power on off. Has an on and off string to send
+    over serial
+    '''
+    serial_dev = '/dev/ttyACM0'
+    baud = 2400
+    off_cmd = b'relay on 0'
+    delay = 5
+    on_cmd = b'relay off 0'
+
+    def __init__(self, outlet):
+        parsed = outlet.replace("serial://", '').split(';')
+        self.serial_dev = "/dev/" + parsed[0]
+        for param in parsed[1:]:
+            for attr in ['on_cmd', 'off_cmd']:
+                if attr + '=' in param:
+                    setattr(self, attr, param.replace(attr + '=', '').encode())
+
+    def reset(self):
+        import serial
+        with serial.Serial(self.serial_dev, self.baud) as ser:
+            if self.off_cmd is not None:
+                ser.write(self.off_cmd + '\r')
+                time.sleep(5)
+
+            ser.write(self.on_cmd + '\r')
+
+            ser.close()
+
+#
+# IP Power 9258 networked power switch class
+#
+# This work is released under the Creative Commons Zero (CC0) license.
+# See http://creativecommons.org/publicdomain/zero/1.0/
+
+# Example use:
+#
+# import time
+# from ip9258 import Ip9258
+#
+# ip9258 = Ip9258('192.168.1.10', 'admin', 'password')
+#
+# for i in range(4):
+#     ip9258.on(i)
+#     time.delay(1)
+#
+#     ip9258.off(i)
+#     time.delay(1)
+
+import urllib2
+
+class Ip9258(PowerDevice):
+    def __init__(self, ip_address, port, username="admin", password="12345678"):
+        PowerDevice.__init__(self, ip_address, username, password)
+        self._ip_address = ip_address
+        self.port = port
+
+        # create a password manager
+        password_mgr = urllib2.HTTPPasswordMgrWithDefaultRealm()
+        password_mgr.add_password(None, 'http://' + ip_address, username, password)
+        handler = urllib2.HTTPBasicAuthHandler(password_mgr)
+        opener = urllib2.build_opener(handler)
+        # Now all calls to urllib2.urlopen use our opener.
+        urllib2.install_opener(opener)
+
+    def on(self):
+        print("Power On Port(%s)\n" % self.port)
+        return urllib2.urlopen('http://' + self._ip_address + '/set.cmd?cmd=setpower+p6' + str(self.port) + '=1')
+
+    def off(self):
+        print("Power Off Port(%s)\n" % self.port)
+        return urllib2.urlopen('http://' + self._ip_address + '/set.cmd?cmd=setpower+p6' + str(self.port) + '=0')
+
+    def reset(self):
+	self.off()
+	time.sleep(5)
+	self.on()
 
 if __name__ == "__main__":
     print("Gathering info about power outlets...")

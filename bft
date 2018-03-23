@@ -13,15 +13,16 @@ import os
 import random
 import sys
 import unittest2
-import junitxml
 import json
+import hashlib
+import time
 
 # Put this directory into the python path, so
 # that devices may be imported.
 import site
 site.addsitedir(os.path.dirname(os.path.realpath(__file__)))
 
-from devices import board_decider, debian, logstash, elasticlogger
+from devices import debian, logstash, elasticlogger
 
 def setup_legacy_devices(config):
     '''This will setup legacy hard coded devices to into the config'''
@@ -61,8 +62,9 @@ def setup_legacy_devices(config):
                                         port=config.board.get('2g_port', "22"))
 
 
-def setup_dynamic_devices(config):
+def setup_dynamic_devices(config, env=None):
     '''Sets up dynamic devices from devices node in JSON config file'''
+
     config.devices = []
     for device in config.board['devices']:
         if device['type'] == 'debian':
@@ -76,7 +78,11 @@ def setup_dynamic_devices(config):
                 cmd=device.get('cmd', None),
                 post_cmd_host=device.get('post_cmd_host', None),
                 post_cmd=device.get('post_cmd', None),
-                cleanup_cmd=device.get('cleanup_cmd', None))
+                cleanup_cmd=device.get('cleanup_cmd', None),
+                env=env,
+                lan_network=config.console.lan_network,
+                lan_gateway=config.console.lan_gateway,
+                config=device)
             setattr(config, device['name'], d)
             config.devices.append(device['name'])
         else:
@@ -116,14 +122,20 @@ def main():
                 if 'devices' in config.board:
                     tftp_dev = [ x for x in config.board['devices'] if 'tftpd-server' in x.get('options', "") ]
                     if len(tftp_dev) == 1:
-                        tftp_server = tftp_dev[0]['ipaddr']
+                        if 'ipaddr' in tftp_dev[0]:
+                            tftp_server = tftp_dev[0]['ipaddr']
+                        else:
+                            tftp_server = tftp_dev[0]['name']
                         tftp_port = tftp_dev[0].get('port', '22')
-                    else:
+                    elif len(tftp_dev) > 1:
                         print("WARN: more than one TFTP server is configured, please pick one")
                 elif tftp_server is None:
                     if len(tftp_dev) == 1:
                         tftp_dev = [ x for x in config.board['devices'] if x['name'] == 'wan' ]
-                        tftp_server = tftp_dev[0]['ipaddr']
+                        if 'ipaddr' in tftp_dev[0]:
+                            tftp_server = tftp_dev[0]['ipaddr']
+                        else:
+                            tftp_server = tftp_dev[0]['name']
                         tftp_port = tftp_dev[0].get('port', '22')
                     else:
                         print("WARN: more than one TFTP server is configured, please pick one")
@@ -131,8 +143,14 @@ def main():
                 # if not by ipaddr let's connect to the lan device later and update
                 pass
 
+
+            uniqid = hashlib.md5("%0.100f" % time.time()).hexdigest()[:15]
+            env = {"wan_iface": "wan%s" % uniqid[:12],
+                    "lan_iface": "lan%s" % uniqid[:12],
+                    "uniq_id": uniqid}
+
             # Connect to board
-            config.console = board_decider.board(config.board['board_type'],
+            config.console = devices.board_decider(config.board['board_type'],
                                                  conn_cmd=config.board['conn_cmd'],
                                                  power_ip=config.board.get('powerip', None),
                                                  power_outlet=config.board.get('powerport', None),
@@ -144,23 +162,44 @@ def main():
                                                  connection_type=config.board.get('connection_type', None),
                                                  ssh_password=config.board.get('ssh_password', None),
                                                  power_username=config.board.get('power_username', None),
-                                                 power_password=config.board.get('power_password', None))
+                                                 power_password=config.board.get('power_password', None),
+                                                 rootfs=config.ROOTFS,
+                                                 kernel=config.KERNEL,
+                                                 env=env)
             print_bold("dut device console = %s" % colored("black", 'grey'))
 
             setup_legacy_devices(config)
 
             if 'devices' in config.board:
-                setup_dynamic_devices(config)
+                setup_dynamic_devices(config, env=env)
 
-            # legacy wan device
-            if tftp_server is None and hasattr(config, 'wan'):
+            def get_tftp_config(dev):
                 saved = config.console.logfile_read
                 config.console.logfile_read = None
-                config.console.tftp_server = config.wan.get_ip_addr("eth0")
+                config.console.tftp_server = dev.get_ip_addr("eth0")
                 config.console.tftp_username = "root"
                 config.console.tftp_password = "bigfoot1"
                 config.console.tftp_port = "22"
                 config.console.logfile_read = saved
+
+            # check devices after they start for tftpd-server option if
+            # if we still have not configured a tftp server
+            if tftp_server is None:
+                for x in config.board['devices']:
+                    if 'tftpd-server' in x.get('options', ""):
+                        get_tftp_config(getattr(config, x['name']))
+                        # TODO: how do we handle multiple tftp servers, break for now
+                        break
+            else:
+                # check if the tftp_server is an unresolved name and resolve the ip
+                for x in config.board['devices']:
+                    if tftp_server == x.get('name', ""):
+                        get_tftp_config(getattr(config, tftp_server))
+
+            # legacy wan device
+            if tftp_server is None and getattr(config, 'wan') is not None:
+                get_tftp_config(config.wan)
+
 
         except Exception as e:
             print(e)
@@ -187,15 +226,11 @@ def main():
 
     # Run tests
     os.environ['TEST_START_TIME'] = datetime.datetime.now().strftime("%s")
-    result_name = os.path.join(config.output_dir + "test_results.xml")
-    result_file = open(result_name, "w")
-    result = junitxml.JUnitXmlResult(result_file)
-    result.startTestRun()
     tests_to_run = []
-    suite = unittest2.TestSuite()
     # Add tests from specified suite
     print_bold('==========\nTest suite "%s" has been specified, will attempt to run tests:' % config.TEST_SUITE)
     import tests
+    tests.init(config)
     import testsuites
     for i, name in enumerate(testsuites.list_tests[config.TEST_SUITE]):
         if isinstance(name, str):
@@ -218,33 +253,62 @@ def main():
             print_bold("Unable to find specified extra tests, aborting...")
             sys.exit(1)
 
-    for x in tests_to_run:
-        suite.addTest(x)
-
     print_bold('==========')
     try:
-        print_bold(suite.run(result))
+        tests_pass = tests_fail = tests_skip = 0
+        curr_test = None
+        for test in tests_to_run:
+            curr_test = test
+            test.run()
+            curr_test = None
+            grade = getattr(test, "result_grade", None)
+            if grade == "OK" or grade == "Unexp OK":
+                tests_pass += 1
+            elif grade == "FAIL" or grade == "Exp FAIL":
+                tests_fail += 1
+            elif grade == "SKIP" or grade is None:
+                tests_skip += 1
+
     except KeyboardInterrupt:
         print_bold("Run interrupted. Wrapping up...")
-    result.stopTestRun()
+        if curr_test is not None:
+            curr_test.recover()
+
+    print_bold("Results run=%d failures=%d skipped=%d" % (tests_pass, tests_fail, tests_skip))
+
     try:
         config.console.close()
-        config.lan.close()
-        config.wan.close()
+        if 'devices' in config.board:
+            for device in config.devices:
+                getattr(config, device).close()
+        else:
+            if config.lan is not None:
+                config.lan.close()
+            if config.wan is not None:
+                config.wan.close()
     except Exception as e:
         print(e)
         print_bold("For some reason, could not close a connection.")
-    print_bold("Wrote %s" % result_name)
     library.print_board_info(config.board)
-    result_file.close()
 
     with open(os.path.join(config.output_dir, 'console.log'), 'w') as clog:
         clog.write(config.console.log)
 
     os.environ['TEST_END_TIME'] = datetime.datetime.now().strftime("%s")
 
+    # grab golden master results
+    try:
+        if config.golden is not None:
+            import requests
+            golden = requests.get(config.golden).json()
+        else:
+            golden = {}
+    except:
+        print_bold("Failed to fetch golden master results, skipping...")
+        golden = {}
+
     # Write test result messages to a file
-    full_results = library.process_test_results(tests_to_run)
+    full_results = library.process_test_results(tests_to_run, golden)
     json.dump(full_results,
               open(os.path.join(config.output_dir + 'test_results.json'), 'w'),
               indent=4,
@@ -276,14 +340,26 @@ def main():
     info_for_remote_log.pop('test_results', None)
     # but we will add back specific test results data
     for t in tests_to_run:
-        if hasattr(t, 'override_kibana_name'):
-            n = t.override_kibana_name
-        else:
-            n = t.__class__.__name__
-        for k, v in t.logged.items():
-            info_for_remote_log[n + '-' + k] = v
-        if hasattr(t, 'result_grade'):
-            info_for_remote_log[n + "-result"] = t.result_grade
+        def prepare_results_for_kibana(test, prefix=""):
+            if hasattr(test, 'override_kibana_name'):
+                n = test.override_kibana_name
+            elif hasattr(test, 'name'):
+                n = test.name
+            else:
+                n = test.__class__.__name__
+
+            n = prefix + n
+
+            for k, v in test.logged.items():
+                info_for_remote_log[n + '-' + k] = v
+            if hasattr(test, 'result_grade'):
+                info_for_remote_log[n + "-result"] = test.result_grade
+
+            return n
+
+        prefix = prepare_results_for_kibana(t) + "-"
+        for subtest in t.subtests:
+            prepare_results_for_kibana(subtest, prefix=prefix)
 
     try:
         if config.logging_server is not None:

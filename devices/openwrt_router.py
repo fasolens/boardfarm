@@ -16,17 +16,11 @@ import urllib2
 import pexpect
 import base
 from datetime import datetime
-import time
+import ipaddress
 
-import error_detect
 import power
 import common
 import connection_decider
-
-
-# To Do: maybe make this config variable
-BFT_DEBUG = "BFT_DEBUG" in os.environ
-
 
 class OpenWrtRouter(base.BaseDevice):
     '''
@@ -36,6 +30,8 @@ class OpenWrtRouter(base.BaseDevice):
       power_ip: IP Address of power unit to which this device is connected
       power_outlet: Outlet # this device is connected
     '''
+    conn_list = None
+    consoles = []
 
     prompt = ['root\\@.*:.*#', '/ # ', '@R7500:/# ']
     uprompt = ['ath>', '\(IPQ\) #', 'ar7240>', '\(IPQ40xx\)']
@@ -45,9 +41,13 @@ class OpenWrtRouter(base.BaseDevice):
     lan_gmac_iface = "eth1"
     lan_iface = "br-lan"
     wan_iface = "eth0"
+    tftp_server_int = None
 
-    delaybetweenchar = None
     uboot_net_delay = 30
+
+    routing = True
+    lan_network = ipaddress.IPv4Network(u"192.168.1.0/24")
+    lan_gateway = ipaddress.IPv4Address(u"192.168.1.1")
 
     def __init__(self,
                  model,
@@ -66,6 +66,11 @@ class OpenWrtRouter(base.BaseDevice):
                  power_password=None,
                  **kwargs):
 
+        self.consoles.append(self)
+
+        if type(conn_cmd) is list:
+            self.conn_list = conn_cmd
+            conn_cmd = self.conn_list[0]
 
         if connection_type is None:
             print("\nWARNING: Unknown connection type using ser2net\n")
@@ -79,13 +84,16 @@ class OpenWrtRouter(base.BaseDevice):
         self.model = model
         self.web_proxy = web_proxy
         if tftp_server:
-            self.tftp_server = socket.gethostbyname(tftp_server)
-            if tftp_username:
-                self.tftp_username = tftp_username
-            if tftp_password:
-                self.tftp_password = tftp_password
-            if tftp_port:
-                self.tftp_port = tftp_port
+            try:
+                self.tftp_server = socket.gethostbyname(tftp_server)
+                if tftp_username:
+                    self.tftp_username = tftp_username
+                if tftp_password:
+                    self.tftp_password = tftp_password
+                if tftp_port:
+                    self.tftp_port = tftp_port
+            except:
+                pass
         else:
             self.tftp_server = None
         atexit.register(self.kill_console_at_exit)
@@ -123,8 +131,10 @@ class OpenWrtRouter(base.BaseDevice):
 
     def get_seconds_uptime(self):
         '''Return seconds since last reboot. Stored in /proc/uptime'''
+        self.sendcontrol('c')
+        self.expect(self.prompt)
         self.sendline('\ncat /proc/uptime')
-        self.expect('(\d+).(\d+) (\d+).(\d+)\r\n')
+        self.expect('(\d+).(\d+).*\r\n')
         seconds_up = int(self.match.group(1))
         self.expect(self.prompt)
         return seconds_up
@@ -141,14 +151,14 @@ class OpenWrtRouter(base.BaseDevice):
         self.expect(self.prompt)
         return int(memFree)
 
-    def get_file(self, fname):
+    def get_file(self, fname, lan_ip="192.168.1.1"):
         '''
         OpenWrt routers have a webserver, so we use that to download
         the file via a webproxy (e.g. a device on the board's LAN).
         '''
         if not self.web_proxy:
             raise Exception('No web proxy defined to access board.')
-        url = 'http://192.168.1.1/TEMP'
+        url = 'http://%s/TEMP' % lan_ip
         self.sendline("\nchmod a+r %s" % fname)
         self.expect('chmod ')
         self.expect(self.prompt)
@@ -175,7 +185,7 @@ class OpenWrtRouter(base.BaseDevice):
         self.expect(self.prompt)
         return new_fname
 
-    def tftp_get_file_uboot(self, loadaddr, filename, timeout=30):
+    def tftp_get_file_uboot(self, loadaddr, filename, timeout=60):
         '''Within u-boot, download file from tftp server.'''
         for attempt in range(3):
             try:
@@ -286,14 +296,15 @@ class OpenWrtRouter(base.BaseDevice):
         for interface in [self.wan_iface, self.lan_iface]:
             for i in range(5):
                 try:
-                    ipaddr = self.get_interface_ipaddr(interface).strip()
-                    if not ipaddr:
-                        continue
-                    self.sendline("route -n")
-                    self.expect(interface)
-                    self.expect(self.prompt)
+                    if interface is not None:
+                        ipaddr = self.get_interface_ipaddr(interface).strip()
+                        if not ipaddr:
+                            continue
+                        self.sendline("route -n")
+                        self.expect(interface)
+                        self.expect(self.prompt)
                 except pexpect.TIMEOUT:
-                    print("waiting for wan ipaddr")
+                    print("waiting for wan/lan ipaddr")
                 else:
                     break
 
@@ -333,7 +344,11 @@ class OpenWrtRouter(base.BaseDevice):
         self.expect("wan.proto='?([a-zA-Z0-9\.-]*)'?\r\n", timeout=5)
         return self.match.group(1)
 
-    def setup_uboot_network(self, TFTP_SERVER="192.168.0.1"):
+    def setup_uboot_network(self, tftp_server=None):
+        if self.tftp_server_int is None:
+            if tftp_server is None:
+                raise Exception("Error in TFTP server configuration")
+            self.tftp_server_int = tftp_server
         '''Within U-boot, request IP Address,
         set server IP, and other networking tasks.'''
         # Use standard eth1 address of wan-side computer
@@ -348,9 +363,9 @@ class OpenWrtRouter(base.BaseDevice):
         if i == 0:
             self.sendline('setenv ipaddr 192.168.0.2')
             self.expect(self.uprompt)
-        self.sendline('setenv serverip %s' % TFTP_SERVER)
+        self.sendline('setenv serverip %s' % self.tftp_server_int)
         self.expect(self.uprompt)
-        if TFTP_SERVER:
+        if self.tftp_server_int:
             #interfaces=['eth1','eth0']
             passed = False
             for attempt in range(5):
@@ -359,7 +374,7 @@ class OpenWrtRouter(base.BaseDevice):
                     self.expect('<INTERRUPT>')
                     self.expect(self.uprompt)
                     self.sendline("ping $serverip")
-                    self.expect("host %s is alive" % TFTP_SERVER)
+                    self.expect("host %s is alive" % self.tftp_server_int)
                     self.expect(self.uprompt)
                     passed = True
                     break
@@ -382,13 +397,13 @@ class OpenWrtRouter(base.BaseDevice):
             self.sendline('saveenv')
         self.expect(self.uprompt)
 
-    def boot_linux(self, rootfs=None):
+    def boot_linux(self, rootfs=None, bootargs=""):
         print("\nWARNING: We don't know how to boot this board to linux "
               "please write the code to do so.")
 
     def wait_for_linux(self):
         '''Verify Linux starts up.'''
-        i = self.expect(['Reset Button Push down', 'Booting Linux', 'Starting kernel ...'], timeout=45)
+        i = self.expect(['Reset Button Push down', 'Linux version', 'Booting Linux', 'Starting kernel ...', 'Kernel command line specified:'], timeout=45)
         if i == 0:
             self.expect('httpd')
             self.sendcontrol('c')
@@ -399,6 +414,9 @@ class OpenWrtRouter(base.BaseDevice):
             raise Exception('U-Boot came back when booting kernel')
         elif i == 1:
             self.sendline('root')
+            if 0 == self.expect(['assword:'] + self.prompt):
+                self.sendline('password')
+                self.expect(self.prompt)
 
         # Give things time to start or crash on their own.
         # Some things, like wifi, take a while.
@@ -427,12 +445,12 @@ class OpenWrtRouter(base.BaseDevice):
                 self.network_restart()
                 self.expect(pexpect.TIMEOUT, timeout=10)
 
-    def uci_allow_wan_http(self):
+    def uci_allow_wan_http(self, lan_ip="192.168.1.1"):
         '''Allow access to webgui from devices on WAN interface.'''
-        self.uci_forward_traffic_redirect("tcp", "80", "192.168.1.1")
+        self.uci_forward_traffic_redirect("tcp", "80", lan_ip)
 
-    def uci_allow_wan_ssh(self):
-        self.uci_forward_traffic_redirect("tcp", "22", "192.168.1.1")
+    def uci_allow_wan_ssh(self, lan_ip="192.168.1.1"):
+        self.uci_forward_traffic_redirect("tcp", "22", lan_ip)
 
     def uci_forward_traffic_redirect(self, tcp_udp, port_wan, ip_lan):
         self.sendline('uci add firewall redirect')
@@ -467,56 +485,6 @@ class OpenWrtRouter(base.BaseDevice):
 	else:
 		print("WARN: Overlay still not mounted")
 
-    # Optional send and expect functions to try and be fancy at catching errors
-    def send(self, s):
-        if BFT_DEBUG:
-            common.print_bold("%s = sending: %s" %
-                              (error_detect.caller_file_line(3), repr(s)))
-
-        if self.delaybetweenchar is not None:
-            ret = 0
-            for char in s:
-                ret += super(OpenWrtRouter, self).send(char)
-                time.sleep(self.delaybetweenchar)
-            return ret
-
-        return super(OpenWrtRouter, self).send(s)
-
-    def expect_helper(self, pattern, wrapper, *args, **kwargs):
-        if not BFT_DEBUG:
-            return wrapper(pattern, *args, **kwargs)
-
-        common.print_bold("%s = expecting: %s" %
-                              (error_detect.caller_file_line(2), repr(pattern)))
-        try:
-            ret = wrapper(pattern, *args, **kwargs)
-            if hasattr(self.match, "group"):
-                common.print_bold("%s = matched: %s" %
-                                  (error_detect.caller_file_line(2), repr(self.match.group())))
-            else:
-                common.print_bold("%s = matched: %s" %
-                                  (error_detect.caller_file_line(2), repr(pattern)))
-            return ret
-        except:
-            common.print_bold("expired")
-            raise
-
-    def expect(self, pattern, *args, **kwargs):
-        wrapper = super(OpenWrtRouter, self).expect
-
-        return self.expect_helper(pattern, wrapper, *args, **kwargs)
-
-    def expect_exact(self, pattern, *args, **kwargs):
-        wrapper = super(OpenWrtRouter, self).expect_exact
-
-        return self.expect_helper(pattern, wrapper, *args, **kwargs)
-
-    def sendcontrol(self, char):
-        if BFT_DEBUG:
-            common.print_bold("%s = sending: control-%s" %
-                              (error_detect.caller_file_line(3), repr(char)))
-
-        return super(OpenWrtRouter, self).sendcontrol(char)
 
 if __name__ == '__main__':
     # Example use

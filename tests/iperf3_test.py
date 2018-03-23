@@ -12,24 +12,30 @@ from devices import board, wan, lan, wlan, prompt
 
 class iPerf3Test(rootfs_boot.RootFSBootTest):
     '''iPerf3 generic performance tests'''
+
+    opts= ""
+    time = 60
+    server_port = "5201"
+
     def runTest(self):
         installers.install_iperf3(wan)
         installers.install_iperf3(lan)
 
-        wan.sendline('iperf3 -s')
+        wan.sendline('iperf3 -s -p %s' % self.server_port)
         wan.expect('-----------------------------------------------------------')
         wan.expect('-----------------------------------------------------------')
 
-        time = 60
 
-        lan.sendline('iperf3 -c 192.168.0.1 -P5 -t %s -i 0' % time)
-        lan.expect(prompt, timeout=time+5)
+        lan.sendline('iperf3 %s -c %s -P5 -t %s -i 0 -p %s' % (self.opts, wan.gw, self.time, self.server_port))
+        lan.expect(prompt, timeout=self.time+10)
 
         sender = re.findall('SUM.*Bytes\s*(.*/sec).*sender', lan.before)[-1]
         if 'Mbits' in sender:
             s_rate = float(sender.split()[0])
         elif 'Kbits' in sender:
-            s_rate = float(sender.split()[0]/1024)
+            s_rate = float(sender.split()[0])/1024
+        elif 'Gbits' in sender:
+            s_rate = float(sender.split()[0])*1024
         else:
             raise Exception("Unknown rate in sender results")
 
@@ -37,11 +43,13 @@ class iPerf3Test(rootfs_boot.RootFSBootTest):
         if 'Mbits' in recv:
             r_rate = float(recv.split()[0])
         elif 'Kbits' in recv:
-            r_rate = float(recv.split()[0]/1024)
+            r_rate = float(recv.split()[0])/1024
+        elif 'Gbits' in recv:
+            r_rate = float(recv.split()[0])*1024
         else:
             raise Exception("Unknown rate in recv results")
 
-        self.result_message = "Sender rate = %si MBits/sec, Receiver rate = %s Mbits/sec\n", (s_rate, r_rate)
+        self.result_message = "Sender rate = %s MBits/sec, Receiver rate = %s Mbits/sec\n" % (s_rate, r_rate)
         self.logged['s_rate'] = s_rate
         self.logged['r_rate'] = r_rate
 
@@ -52,3 +60,13 @@ class iPerf3Test(rootfs_boot.RootFSBootTest):
             d.sendcontrol('c')
             d.sendcontrol('c')
             d.expect(prompt)
+
+class iPerf3RTest(iPerf3Test):
+    '''iPerf3 reverse generic performance tests'''
+
+    opts = "-R"
+
+
+class iPerf3Test2nd(iPerf3Test):
+    '''iPerf3 on second server port'''
+    server_port = "5202"

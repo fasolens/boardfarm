@@ -1,7 +1,7 @@
 {
     "rpi3-1": {
         "board_type": "rpi3",
-        "conn_cmd": "cu -l /dev/ttyUSB4 -s 115200",
+        "conn_cmd": "cu -l /dev/ttyUSB1 -s 115200",
 	"devices": [
 		{
 			"type": "debian",
@@ -10,7 +10,7 @@
 			"cmd": "docker run --name wan --privileged -it bft:node /bin/bash",
 			"post_cmd_host": "sudo ip link set netns $(docker inspect --format '{{.State.Pid}}' wan) dev enx00249b14dc6e",
 			"post_cmd": "ip link set enx00249b14dc6e name eth1",
-			"cleanup_cmd": "docker stop wan; docker rm wan",
+			"cleanup_cmd": "docker stop wan; docker rm wan; sudo ip link set dev enx00249b14dc6e down",
 			"color": "cyan",
 			"options": "tftpd-server"
 		},
@@ -19,13 +19,71 @@
 			"name": "lan",
 			"pre_cmd_host": "docker build -t bft:node bft-node",
 			"cmd": "docker run --name lan --privileged -it bft:node /bin/bash",
-			"post_cmd_host": "sudo ip link set netns $(docker inspect --format '{{.State.Pid}}' lan) dev enx0050b61bfde4",
-			"post_cmd": "ip link set enx0050b61bfde4 name eth1",
-			"cleanup_cmd": "docker stop lan; docker rm lan",
+			"post_cmd_host": "sudo ip link set netns $(docker inspect --format '{{.State.Pid}}' lan) dev enxc05627904e8c",
+			"post_cmd": "ip link set enxc05627904e8c name eth1",
+			"cleanup_cmd": "docker stop lan; docker rm lan; sudo ip link set dev enxc05627904e8c down",
 			"color": "blue"
 		}
 	],
 	"connection_type": "local_serial",
         "notes": "Rpi3 device with docker containers attached to WAN/LAN"
+    },
+    "qemux86-1": {
+        "board_type": "qemux86",
+        "conn_cmd": "sudo qemu-system-i386 -m 256 -nographic --enable-kvm -netdev tap,id=wan,ifname=${wan_iface} -device e1000,netdev=wan -netdev tap,id=lan,ifname=${lan_iface} -device e1000,netdev=lan",
+        "devices": [
+                {
+                        "type": "debian",
+                        "name": "wan",
+                        "pre_cmd_host": "docker build -t bft:node bft-node",
+                        "cmd": "docker run --name wan-${uniq_id} --privileged -it bft:node /bin/bash",
+                        "post_cmd_host": "sudo ip link set netns $(docker inspect --format '{{.State.Pid}}' wan-${uniq_id}) dev ${wan_iface}",
+                        "post_cmd": "ip link set ${wan_iface} name eth1",
+                        "cleanup_cmd": "docker stop wan-${uniq_id}; docker rm wan-${uniq_id}",
+                        "color": "cyan",
+                        "options": "tftpd-server"
+                },
+                {
+                        "type": "debian",
+                        "name": "lan",
+                        "pre_cmd_host": "docker build -t bft:node bft-node",
+                        "cmd": "docker run --name lan-${uniq_id} --privileged -it bft:node /bin/bash",
+                        "post_cmd_host": "sudo ip link set netns $(docker inspect --format '{{.State.Pid}}' lan-${uniq_id}) dev ${lan_iface}",
+                        "post_cmd": "ip link set ${lan_iface} name eth1",
+                        "cleanup_cmd": "docker stop lan-${uniq_id}; docker rm lan-${uniq_id}",
+                        "color": "blue"
+                }
+        ],
+        "connection_type": "local_serial",
+        "notes": "QEMU emulated devices"
+    },
+    "new_device": {
+        "board_type": "Unknown",
+        "conn_cmd": "cu -l /dev/ttyUSB1 -s 115200",
+	"devices": [
+		{
+			"type": "debian",
+			"name": "wan",
+			"pre_cmd_host": "docker build -t bft:node bft-node",
+			"cmd": "docker run --name wan --privileged -it bft:node /bin/bash",
+			"post_cmd_host": "sudo ip link set netns $(docker inspect --format '{{.State.Pid}}' wan) dev enx00249b14dc6e",
+			"post_cmd": "ip link set enx00249b14dc6e name eth1",
+			"cleanup_cmd": "docker stop wan; docker rm wan; sudo ip link set dev enx00249b14dc6e down",
+			"color": "cyan",
+			"options": "tftpd-server"
+		},
+		{
+			"type": "debian",
+			"name": "lan",
+			"pre_cmd_host": "docker build -t bft:node bft-node",
+			"cmd": "docker run --name lan --privileged -it bft:node /bin/bash",
+			"post_cmd_host": "sudo ip link set netns $(docker inspect --format '{{.State.Pid}}' lan) dev enxc05627904e8c",
+			"post_cmd": "ip link set enxc05627904e8c name eth1",
+			"cleanup_cmd": "docker stop lan; docker rm lan; sudo ip link set dev enxc05627904e8c down",
+			"color": "blue"
+		}
+	],
+	"connection_type": "local_serial",
+        "notes": "Unknown device with docker containers attached to WAN/LAN"
     }
 }

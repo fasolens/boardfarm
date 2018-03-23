@@ -16,8 +16,10 @@ import json
 import unittest2
 try:
     from urllib.request import urlopen
+    import urllib
 except:
     from urllib2 import urlopen
+    import urllib2 as urllib
 import re
 
 import library
@@ -74,11 +76,14 @@ def parse():
     parser.add_argument('-o', '--output_dir', metavar='', type=str, default=owrt_tests_dir, help='Directory to output results files too')
     parser.add_argument('-z', '--no-network', action='store_true', help='Skip basic network tests when booting')
     parser.add_argument('-c', '--config_file', metavar='', type=str, default=boardfarm_config_location, help='JSON config file for boardfarm')
+    parser.add_argument('--bootargs', metavar='', type=str, default=None, help='bootargs to set or append to default args (board dependant)')
+    parser.add_argument('-g', '--golden', metavar='', type=str, default=None, help='Path to JSON results to compare against (golden master)')
 
     args = parser.parse_args()
 
     if args.list_tests:
         import tests
+        tests.init(config)
         # Print all classes that are a subclass of TestCase
         for e in dir(tests):
             thing = getattr(tests, e)
@@ -96,6 +101,17 @@ def parse():
         else:
             data = open(args.config_file, 'r').read()
         config.boardfarm_config = json.loads(data)
+
+        if 'locations' in config.boardfarm_config:
+            location = config.boardfarm_config['locations']
+            del config.boardfarm_config['locations']
+
+            for board in config.boardfarm_config:
+                if 'location' in config.boardfarm_config[board]:
+                    board_location = config.boardfarm_config[board]['location']
+                    if board_location in location:
+                        config.boardfarm_config[board].update(location[board_location])
+
     except Exception as e:
         print(e)
         print('Unable to access/read Board Farm configuration\n%s' % boardfarm_config_location)
@@ -143,8 +159,28 @@ def parse():
             continue
         if x.startswith('http://') or x.startswith('https://'):
             try:
+		def add_basic_auth(login_str, request):
+		    '''Adds Basic auth to http request, pass in login:password as string'''
+		    import base64
+		    encodeuser = base64.b64encode(login_str.encode('utf-8')).decode("utf-8")
+		    authheader =  "Basic %s" % encodeuser
+		    request.add_header("Authorization", authheader)
+
+                import ssl
+                context = ssl._create_unverified_context()
+
+		req = urllib.Request(x)
+
+                try:
+                    import netrc, urlparse
+                    n = netrc.netrc()
+                    login, unused, password = n.authenticators(urlparse.urlparse(x).hostname)
+		    add_basic_auth("%s:%s" % (login, password), req)
+                except (TypeError, ImportError, IOError, netrc.NetrcParseError):
+                    pass
+
                 # If url returns 404 or similar, raise exception
-                urlopen(x, timeout=20)
+                urlopen(req, timeout=20, context=context)
             except Exception as e:
                 print(e)
                 print('Error trying to access %s' % x)
@@ -223,6 +259,8 @@ def parse():
     config.WAN_PROTO = args.wan
     config.reboot_vms = args.reboot_vms
     config.setup_device_networking = not args.no_network
+    config.bootargs = args.bootargs
+    config.golden = args.golden
 
     return config
 

@@ -7,15 +7,20 @@
 
 import common
 import openwrt_router
-
+import os
+import ipaddress
 
 class RPI(openwrt_router.OpenWrtRouter):
     '''
     Raspberry pi board
     '''
+    model = ("rpi3")
 
     wan_iface = "erouter0"
     lan_iface = "brlan0"
+
+    lan_network = ipaddress.IPv4Network(u"10.0.0.0/24")
+    lan_gateway = ipaddress.IPv4Address(u"10.0.0.1")
 
     uprompt = ["U-Boot>"]
     uboot_eth = "sms0"
@@ -27,6 +32,9 @@ class RPI(openwrt_router.OpenWrtRouter):
 
     # can't get u-boot to work without a delay
     delaybetweenchar = 0.05
+
+    # allowed open ports (starting point)
+    wan_open_ports = ['22', '8080', '8087', '8088', '8090']
 
     def flash_uboot(self, uboot):
         '''In this case it's flashing the vfat partition of the bootload.
@@ -93,7 +101,7 @@ class RPI(openwrt_router.OpenWrtRouter):
         self.expect(self.uprompt)
         self.sendline('mmc write %s %s %s' % (self.uboot_ddr_addr, start, count))
         self.expect_exact('mmc write %s %s %s' % (self.uboot_ddr_addr, start, count))
-        self.expect(self.uprompt, timeout=120)
+        self.expect(self.uprompt, timeout=480)
 
     def flash_linux(self, KERNEL):
         common.print_bold("\n===== Flashing linux =====\n")
@@ -101,16 +109,39 @@ class RPI(openwrt_router.OpenWrtRouter):
         filename = self.prepare_file(KERNEL)
         size = self.tftp_get_file_uboot(self.uboot_ddr_addr, filename)
 
-        self.sendline('fatwrite mmc 0 %s uImage $filesize' % self.uboot_ddr_addr)
+        self.kernel_file = os.path.basename(KERNEL)
+        self.sendline('fatwrite mmc 0 %s %s $filesize' % (self.kernel_file, self.uboot_ddr_addr))
         self.expect(self.uprompt)
 
-    def boot_linux(self, rootfs=None):
+    def wait_for_linux(self):
+        super(RPI, self).wait_for_linux()
+
+        self.sendline('cat /etc/issue')
+        if 0 == self.expect(['OpenEmbedded'] + self.prompt):
+            self.routing = False
+            self.wan_iface = "eth0"
+            self.lan_iface = None
+            self.expect(self.prompt)
+
+        self.sendline('dmcli eRT getv Device.DeviceInfo.X_RDKCENTRAL-COM_CaptivePortalEnable')
+        if self.expect(['               type:       bool,    value: false', 'dmcli: not found'] + self.prompt) > 1:
+            self.sendline('dmcli eRT setv Device.DeviceInfo.X_RDKCENTRAL-COM_CaptivePortalEnable bool false')
+            self.expect(self.prompt)
+            self.sendline('reboot')
+            super(RPI, self).wait_for_linux()
+
+    def boot_linux(self, rootfs=None, bootargs=""):
         common.print_bold("\n===== Booting linux for %s on %s =====" % (self.model, self.root_type))
 
-        #self.sendline('setenv bootargs "8250.nr_uarts=1 bcm2708_fb.fbwidth=1824 bcm2708_fb.fbheight=984 bcm2708_fb.fbswap=1 dma.dmachans=0x7f35 bcm2709.boardrev=0xa02082 bcm2709.serial=0xc07187c2 bcm2709.uart_clock=48000000 smsc95xx.macaddr=B8:27:EB:71:87:C2 vc_mem.mem_base=0x3dc00000 vc_mem.mem_size=0x3f000000  dwc_otg.lpm_enable=0 console=ttyAMA0,115200 root=mmcblk0p2 rootfstype=ext4 elevator=deadline fsck.repair=yes rootwait"')
-        #self.expect(self.uprompt)
+        self.sendline('fdt addr $fdt_addr')
+        self.expect(self.uprompt)
+        self.sendline('fdt get value bcm_bootargs /chosen bootargs')
+        self.expect(self.uprompt)
 
-        self.sendline("setenv bootcmd 'fatload mmc 0 ${kernel_addr_r} uImage; bootm ${kernel_addr_r} - ${fdt_addr}'")
+        self.sendline('setenv bootargs "$bcm_bootargs %s"' % bootargs)
+        self.expect(self.uprompt)
+
+        self.sendline("setenv bootcmd 'fatload mmc 0 ${kernel_addr_r} %s; bootm ${kernel_addr_r} - ${fdt_addr}; booti ${kernel_addr_r} - ${fdt_addr}'" % self.kernel_file)
         self.expect(self.uprompt)
         self.sendline('saveenv')
         self.expect(self.uprompt)

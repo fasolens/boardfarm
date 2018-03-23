@@ -12,6 +12,7 @@ class QcomDakotaRouterNOR(qcom_arm_base.QcomArmBase):
     '''
     Board with an Dakota processor.
     '''
+    model = ("dk01-nor", "dk04-nor")
 
     uboot_ddr_addr = "0x88000000"
     machid_table = {"dk01-nor": "8010000", "dk04-nor": "8010001"}
@@ -37,7 +38,7 @@ class QcomDakotaRouterNOR(qcom_arm_base.QcomArmBase):
         size = self.tftp_get_file_uboot(self.uboot_ddr_addr, filename)
         self.spi_flash_bin(self.kernel_addr, size, self.uboot_ddr_addr, self.kernel_size)
 
-    def boot_linux(self, rootfs=None):
+    def boot_linux(self, rootfs=None, bootargs=""):
         common.print_bold("\n===== Booting linux for %s on %s =====" % (self.model, self.root_type))
         self.reset()
         self.wait_for_boot()

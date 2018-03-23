@@ -1,4 +1,4 @@
-FROM debian:8
+FROM debian:9
 
 RUN echo "root:bigfoot1" | chpasswd
 
@@ -21,9 +21,11 @@ RUN apt-get update && \
 	tcpdump \
 	iperf \
 	iperf3 \
-	netcat
+	netcat \
+	python-pip \
+	python-mysqldb
 
 RUN mkdir /var/run/sshd
-RUN sed -i 's/PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+RUN sed -i 's/.*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 
 EXPOSE 22

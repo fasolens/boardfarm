@@ -16,41 +16,62 @@ def print_board_info(x):
     for key in sorted(x):
         print_bold("  %s: %s" % (key, x[key]))
 
-def process_test_results(raw_test_results):
+def process_test_results(raw_test_results, golden={}):
     full_results = {'test_results': [],
                     'tests_pass': 0,
                     'tests_fail': 0,
                     'tests_skip': 0,
                     'tests_total': 0,
+                    'unexpected_fail': 0,
+                    'unexpected_pass': 0,
                     }
     for i, x in enumerate(raw_test_results):
-        message = None
-        name = x.__class__.__name__
-        grade = None
+        def parse_and_add_results(cls, prefix=""):
+            name = prefix + getattr(cls, 'name', cls.__class__.__name__)
+            grade = getattr(cls, 'result_grade', None)
+
+            unexpected = False
+            if '_source' in golden:
+                if name + "-result" in golden['_source']:
+                    if golden['_source'][name + "-result"] != grade:
+                        unexpected = True
+
+            if grade == "Unexp OK" or (grade == "OK" and unexpected):
+                grade = "Unexp OK"
+                full_results['unexpected_pass'] += 1
+            elif grade == "Exp FAIL" or (grade == "FAIL" and unexpected):
+                grade = "Exp FAIL"
+                full_results['unexpected_fail'] += 1
+            elif grade == "OK":
+                full_results['tests_pass'] += 1
+            elif grade == "FAIL":
+                full_results['tests_fail'] += 1
+            elif grade == "SKIP" or grade is None:
+                full_results['tests_skip'] += 1
+
+            message = getattr(cls, 'result_message', None)
+
+            if message is None:
+                try:
+                    message = cls.__doc__.split('\n')[0]
+                except:
+                    message = "Missing description of class (no docstring)"
+                    print_bold("WARN: Please add docstring to %s." % cls)
+                    pass
+
+            long_message = getattr(cls, 'long_result_message', "")
+
+            full_results['test_results'].append({"name": name, "message": message, "long_message": long_message, "grade": grade})
+
         try:
-            grade = x.result_grade
-        except:
+            parse_and_add_results(x)
+
+            for subtest in x.subtests:
+                parse_and_add_results(subtest, prefix=x.__class__.__name__ + "-")
+        except Exception as e:
+            print("Failed to parse test result: %s" % e)
             pass
-        if grade == "OK" or grade == "Unexp OK":
-            full_results['tests_pass'] += 1
-        elif grade == "FAIL" or grade == "Exp FAIL":
-            full_results['tests_fail'] += 1
-        elif grade == "SKIP" or grade is None:
-            full_results['tests_skip'] += 1
-        try:
-            # Use only first line of docstring result message
-            message = x.__doc__.split('\n')[0]
-        except:
-            print_bold("WARN: Please add docstring to %s." % x)
-        try:
-            message = x.result_message
-        except:
-            pass
-        if hasattr(x, 'long_result_message'):
-            long_message = x.long_result_message
-        else:
-            long_message = ""
-        full_results['test_results'].append({"name": name, "message": message, "long_message": long_message, "grade": grade})
+
     full_results['tests_total'] = len(raw_test_results)
     return full_results
 

@@ -13,6 +13,8 @@ class QcomMipsRouter(openwrt_router.OpenWrtRouter):
     '''
     Board with a MIPS processor.
     '''
+    model = ("db120", "ap135", "ap143", "ap147", "ap152", "ap151",
+             "ap151-16M", "ap143", "ap152-8M", "tew-823dru")
 
     prompt = ['root\\@.*:.*#', ]
     uprompt = ['ath>', 'ar7240>']
@@ -90,7 +92,7 @@ class QcomMipsRouter(openwrt_router.OpenWrtRouter):
         self.expect('Total of .* bytes were the same')
         self.expect(self.uprompt)
 
-    def boot_linux(self, rootfs=None):
+    def boot_linux(self, rootfs=None, bootargs=""):
         common.print_bold("\n===== Booting linux for %s on %s =====" % (self.model, self.root_type))
         if self.model == "ap135-nand":
             self.sendline('setenv bootcmd nboot 0x81000000 0 0x100000')

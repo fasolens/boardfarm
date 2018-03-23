@@ -13,6 +13,8 @@ class QcomAkroniteRouterNAND(qcom_arm_base.QcomArmBase):
     '''
     Board with an Akronite processor.
     '''
+    model = ("ipq8066", "db149", "ap145", "ap148", "ap148-osprey",
+             "ap148-beeliner", "ap160-1", "ap160-2", "ap161")
 
     machid_table = {"db149": "125b", "ap145": "12ca",
 	  "ap148": "1260", "ap148-beeliner": "1260",
@@ -53,7 +55,7 @@ class QcomAkroniteRouterNAND(qcom_arm_base.QcomArmBase):
 
         raise Exception("Kernel is in UBI rootfs, not separate")
 
-    def boot_linux(self, rootfs=None):
+    def boot_linux(self, rootfs=None, bootargs=""):
         common.print_bold("\n===== Booting linux for %s on %s =====" % (self.model, self.root_type))
         self.reset()
         self.wait_for_boot()

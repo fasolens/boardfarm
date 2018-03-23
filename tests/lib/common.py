@@ -7,7 +7,6 @@
 # vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
 
 import json
-import junitxml
 import pexpect
 import sys
 import subprocess
@@ -118,3 +117,10 @@ def firefox_webproxy_driver(ipport):
 
 def test_msg(msg):
     cprint(msg, None, attrs=['bold'])
+
+class TestResult:
+    logged = {}
+    def __init__(self, name, grade, message):
+        self.name = name
+        self.result_grade = grade
+        self.result_message = message
