@@ -25,6 +25,7 @@ class DebianBox(base.BaseDevice):
 
     prompt = ['root\\@.*:.*#', '/ # ', ".*:~ #" ]
     static_route = None
+    wan_dhcp = False
 
     def __init__(self,
                  name,
@@ -96,6 +97,8 @@ class DebianBox(base.BaseDevice):
                     self.gw = opt.replace('wan-static-ip:', '')
                 if opt.startswith('wan-static-route:'):
                     self.static_route = opt.replace('wan-static-route:', '').replace('-', ' via ')
+                if opt.startswith('wan-dhcp-client'):
+                    self.wan_dhcp = True
 
         try:
             i = self.expect(["yes/no", "assword:", "Last login"] + self.prompt, timeout=30)
@@ -179,7 +182,7 @@ class DebianBox(base.BaseDevice):
                       self.password, self.port,
                       reboot=False)
 
-    def get_ip_addr(self, interface):
+    def get_interface_ipaddr(self, interface):
         self.sendline("\nifconfig %s" % interface)
         regex = ['addr:(\d{1,3}.\d{1,3}.\d{1,3}.\d{1,3}).*(Bcast|P-t-P):',
                  'inet (\d{1,3}.\d{1,3}.\d{1,3}.\d{1,3}).*(broadcast|P-t-P)']
@@ -215,17 +218,24 @@ class DebianBox(base.BaseDevice):
         # which we do via ssh so let's start that as well
         self.start_sshd_server()
 
+        try:
+            eth1_addr = self.get_interface_ipaddr('eth1')
+        except:
+            eth1_addr = None
+
         # set WAN ip address, for now this will always be this address for the device side
-        self.sendline('ifconfig eth1 down')
-        self.expect(self.prompt)
+        if self.gw != eth1_addr:
+            self.sendline('ifconfig eth1 down')
+            self.expect(self.prompt)
 
         # install packages required
         self.sendline('apt-get -o DPkg::Options::="--force-confnew" -qy install tftpd-hpa')
 
         # set WAN ip address, for now this will always be this address for the device side
         # TODO: fix gateway for non-WAN tftp_server
-        self.sendline('ifconfig eth1 %s' % getattr(self, 'gw', '192.168.0.1'))
-        self.expect(self.prompt)
+        if self.gw != eth1_addr:
+            self.sendline('ifconfig eth1 %s' % getattr(self, 'gw', '192.168.0.1'))
+            self.expect(self.prompt)
 
         #configure tftp server
         self.sendline('/etc/init.d/tftpd-hpa stop')
@@ -283,6 +293,9 @@ class DebianBox(base.BaseDevice):
 %s
 EOFEOFEOFEOF''' % (dst, bin_file))
         self.expect(self.prompt)
+        self.sendline('ls %s' % dst)
+        self.expect_exact('ls %s' % dst)
+        self.expect('%s' % dst)
         self.logfile_read = saved_logfile_read
 
     def configure(self, kind):
@@ -304,6 +317,7 @@ EOFEOFEOFEOF''' % (dst, bin_file))
         self.sendline('sed s/INTERFACES=.*/INTERFACES=\\"eth1\\"/g -i /etc/default/isc-dhcp-server')
         self.expect(self.prompt)
         self.sendline('ifconfig eth1 192.168.100.2')
+        self.gw = "192.168.100.2"
         self.expect(self.prompt)
         self.sendline('ip route add 192.168.201.0/24 via 192.168.100.1')
         self.expect(self.prompt)
@@ -409,17 +423,25 @@ EOF''')
         self.expect(self.prompt)
 
         # set WAN ip address
-        self.sendline('ifconfig eth1 %s' % self.gw)
-        self.expect(self.prompt)
-        self.sendline('ifconfig eth1 up')
-        self.expect(self.prompt)
-
-        self.setup_dhcp_server()
+        if self.wan_dhcp:
+            self.sendline('/etc/init.d/isc-dhcp-server stop')
+            self.expect(self.prompt)
+            self.sendline('dhclient -r eth1')
+            self.expect(self.prompt)
+            self.sendline('dhclient eth1')
+            self.expect(self.prompt)
+            self.gw = self.get_interface_ipaddr("eth1")
+        else:
+            self.sendline('ifconfig eth1 %s' % self.gw)
+            self.expect(self.prompt)
+            self.sendline('ifconfig eth1 up')
+            self.expect(self.prompt)
+            self.setup_dhcp_server()
 
         # configure routing
         self.sendline('sysctl net.ipv4.ip_forward=1')
         self.expect(self.prompt)
-        wan_ip_uplink = self.get_ip_addr("eth0")
+        wan_ip_uplink = self.get_interface_ipaddr("eth0")
         self.sendline('iptables -t nat -A POSTROUTING -o eth0 -j SNAT --to-source %s' % wan_ip_uplink)
         self.expect(self.prompt)
 
@@ -435,6 +457,7 @@ EOF''')
 
         if self.static_route is not None:
             # TODO: add some ppint handle this more robustly
+            self.send('ip route del %s; ' % self.static_route.split(' via ')[0])
             self.sendline('ip route add %s' % self.static_route)
             self.expect(self.prompt)
 
@@ -464,7 +487,7 @@ EOF''')
         self.sendline('pkill --signal 9 -f dhclient.*eth1')
         self.expect(self.prompt)
 
-    def start_lan_client(self):
+    def start_lan_client(self, wan_gw=None):
         self.sendline('\nifconfig eth1 up')
         self.expect('ifconfig eth1 up')
         self.expect(self.prompt)
@@ -538,6 +561,15 @@ EOF''')
                     self.sendline('password')
                 except:
                     pass
+                self.expect(self.prompt)
+
+        if wan_gw is not None and 'options' in self.config and \
+            'lan-fixed-route-to-wan' in self.config['options']:
+                self.sendline("ip route list 0/0 | awk '{print $3}'")
+                self.expect_exact("ip route list 0/0 | awk '{print $3}'")
+                self.expect(self.prompt)
+                default_route=self.before.strip()
+                self.sendline('ip route add %s via %s' % (wan_gw, default_route))
                 self.expect(self.prompt)
 
     def add_new_user(self, id, pwd):
